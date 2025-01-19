@@ -1,6 +1,6 @@
-const crypto = require('node:crypto');
+import crypto from 'node:crypto'
 
-class RandomGenerator {
+export default class RandomGenerator {
   static generateSecureKey() {
     return crypto.randomBytes(32).toString('hex');
   }
@@ -20,4 +20,4 @@ class RandomGenerator {
   }
 }
 
-module.exports = RandomGenerator;
+// module.exports = RandomGenerator;
