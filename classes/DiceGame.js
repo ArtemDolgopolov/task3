@@ -1,6 +1,10 @@
+import readline from 'readline';
+import DiceConfigParser from './DiceConfigParser.js';
+import Dice from './Dice.js';
+import FairNumberGenerator from './FairNumberGenerator.js';
 import RandomGenerator from './RandomGenerator.js';
-import readline from 'readline'
-import Table from 'ascii-table'
+import HmacGenerator from './HmacGenerator.js';
+import TableGenerator from './TableGenerator.js';
 
 export default class DiceGame {
   constructor() {
@@ -16,45 +20,42 @@ export default class DiceGame {
   setupGame() {
     const args = process.argv.slice(2);
     if (args.length < 3) {
-      console.log('Please provide at least two dice configurations.');
+      console.log('Please provide at least 3 dice configurations.');
       this.rl.close();
       return;
     }
 
-    let isValid = true;
-    args.forEach((arg, idx) => {
-      const numbers = arg.split(',').map(num => parseInt(num.trim()));
-      if (numbers.length !== 6 || numbers.some(num => isNaN(num))) {
-        console.log(`Error: Invalid dice configuration at index ${idx}. Example: 2,2,4,4,9,9`);
-        isValid = false;
-        process.exit(0);
-      } else {
-        this.dice.push(numbers);
-      }
-    });
+    const parser = new DiceConfigParser();
+    this.dice = parser.parseDiceConfigurations(args);
 
-    if (!isValid) {
-      console.log("Please start over with valid inputs.");
+    const hasDuplicateDice = this.dice.some((dice, index) =>
+      this.dice.findIndex(d => JSON.stringify(d) === JSON.stringify(dice)) !== index
+    );
+    
+    if (hasDuplicateDice) {
+      console.log('You cannot have identical dice. Please choose different dice.');
+      this.rl.close();
       return;
-    } else {
-      this.firstPlayerChoice();
     }
+
+    this.firstPlayerChoice();
   }
 
   async firstPlayerChoice() {
-    const firstPlayer = RandomGenerator.generateRandomNumber(2);
+    const firstPlayer = FairNumberGenerator.generateFairNumber(2);
     const secretKey = RandomGenerator.generateSecureKey();
-    const compHMAC = RandomGenerator.generateHMACMessage(firstPlayer, secretKey);
+    const compHMAC = HmacGenerator.generateHMAC(firstPlayer, secretKey);
 
     while (true) {
       console.log("Let's determine who makes the first move.");
-      console.log(`I selected a random value in the range 0..1 (HMAC=${compHMAC}).`);
+      console.log("I selected a random value in the range 0..1.");
+      console.log(`HMAC: ${compHMAC}`);
       console.log('Try to guess my selection.');
       console.log('0 - 0');
       console.log('1 - 1');
       console.log('X - exit');
       console.log('? - help');
-      
+
       let userSelection = await this.promptUser('Your selection: ');
 
       if (userSelection === 'x' || userSelection === 'X') {
@@ -84,56 +85,21 @@ export default class DiceGame {
   }
 
   showProbabilityTable() {
-    const table = new Table();
-    const diceConfigurations = this.dice;
-
-    table.setHeading('User dice v', ...diceConfigurations.map(d => `[${d}]`));
-
-    diceConfigurations.forEach((playerDice, i) => {
-      const row = [`[${playerDice}]`];
-      diceConfigurations.forEach((computerDice, j) => {
-        if (i === j) {
-          row.push('0');
-        } else {
-            const probability = this.calculateWinProbability(playerDice, computerDice);
-            row.push(`${probability.toFixed(4)}`);
-        }
-      });
-      table.addRow(row);
-    });
-
-    console.log('Probability of the win for the user:');
-    console.log(table.toString());
-  }
-
-  calculateWinProbability(playerDice, computerDice) {
-    let playerWins = 0;
-    let computerWins = 0;
-
-    for (let i = 0; i < 6; i++) {
-      for (let j = 0; j < 6; j++) {
-        if (playerDice[i] > computerDice[j]) {
-          playerWins++;
-        } else if (playerDice[i] < computerDice[j]) {
-          computerWins++;
-        }
-      }
-    }
-
-    return playerWins / 36;
+    const tableGenerator = new TableGenerator(this.dice);
+    tableGenerator.generateTable();
   }
 
   async startTurns(isComputerFirst) {
     let computerDice, playerDice;
 
     if (isComputerFirst) {
-      computerDice = this.chooseRandomDice();
+      computerDice = Dice.chooseRandomDice(this.dice);
       console.log(`I make the first move and choose the [${computerDice}].`);
       playerDice = await this.promptForDice(computerDice);
     } else {
-      playerDice = await this.promptForDice();
-      computerDice = this.chooseRandomDice(playerDice);
-      console.log(`I choose the [${computerDice}] dice.`);
+        playerDice = await this.promptForDice();
+        computerDice = Dice.chooseRandomDice(this.dice, playerDice);
+        console.log(`I choose the [${computerDice}] dice.`);
     }
 
     console.log("It's time for my throw.");
@@ -145,10 +111,8 @@ export default class DiceGame {
     this.evaluateResult(playerThrow, computerThrow);
   }
 
-  chooseRandomDice(excludeDice) {
-    const availableDice = this.dice.filter(d => d !== excludeDice);
-    const randomIndex = RandomGenerator.generateRandomNumber(availableDice.length);
-    return availableDice[randomIndex];
+  chooseRandomDice(excludeDice = null) {
+    return Dice.chooseRandomDice(this.dice, excludeDice);
   }
 
   async promptForDice(excludeDice = null) {
@@ -158,58 +122,78 @@ export default class DiceGame {
       console.log('Choose your dice:');
       let availableIndex = 0;
 
-      this.dice.forEach((dice, idx) => {
+      this.dice.forEach((dice) => {
         if (excludeDice === null || dice !== excludeDice) {
           console.log(`${availableIndex} - [${dice}]`);
           availableIndex++;
         }
       });
 
-      choice = parseInt(await this.promptUser(`Your selection (0-${availableIndex - 1}): `));
+      choice = await this.promptUser(`Your selection (0-${availableIndex - 1}, X for exit, ? for help): `);
 
+      if (choice.toLowerCase() === 'x') {
+        console.log('Exiting...');
+        process.exit(0);
+      } else if (choice === '?') {
+          this.showProbabilityTable();
+          continue;
+      }
+
+      choice = parseInt(choice);
       if (isNaN(choice) || choice < 0 || choice >= availableIndex) {
         console.log('Invalid input. Please enter a valid number within the range.');
       } else {
-        let selectedDice = null;
-        let newIndex = 0;
+          let selectedDice = null;
+          let newIndex = 0;
 
-        this.dice.forEach((dice, idx) => {
-          if (excludeDice === null || dice !== excludeDice) {
-            if (newIndex === choice) {
-              selectedDice = dice;
+          this.dice.forEach((dice) => {
+            if (excludeDice === null || dice !== excludeDice) {
+              if (newIndex === choice) {
+                selectedDice = dice;
+              }
+              newIndex++;
             }
-            newIndex++;
-          }
-        });
+          });
 
-        return selectedDice;
+          return selectedDice;
+        }
       }
     }
-  }
 
   async handleThrow(dice) {
     const secretKey = RandomGenerator.generateSecureKey();
     const compIndex = RandomGenerator.generateRandomNumber(6);
-    const compHMAC = RandomGenerator.generateHMACMessage(compIndex, secretKey);
+    const compHMAC = HmacGenerator.generateHMAC(compIndex, secretKey);
 
-    console.log(`I selected a random value in the range 0..5 (HMAC=${compHMAC}).`);
+    console.log("I selected a random value in the range 0..5.");
+    console.log(`HMAC: ${compHMAC}`);
 
     let playerIndex;
 
     while (true) {
-      const input = await this.promptUser('Add your number modulo 6 (0-5): ');
+      const input = await this.promptUser('Add your number modulo 6 (from 0 to 5), X to exit, ? for help: ');
+
+      if (input.toLowerCase() === 'x') {
+        console.log('Exiting...');
+        process.exit(0);
+      } else if (input === '?') {
+          this.showProbabilityTable();
+          continue;
+      }
+
       playerIndex = parseInt(input);
 
       if (isNaN(playerIndex) || playerIndex < 0 || playerIndex > 5) {
         console.log('Invalid input. Please enter a number between 0 and 5.');
       } else {
-        break;
+          break;
       }
     }
 
     const result = (compIndex + playerIndex) % 6;
 
-    console.log(`My number is ${compIndex} (KEY=${secretKey}).`);
+    console.log(`My number is ${compIndex}.`);
+    console.log(`Key: ${secretKey}`);
     console.log(`The result is ${compIndex} + ${playerIndex} = ${result} (mod 6).`);
     console.log(`Throw result: ${dice[result]}.`);
 
@@ -221,9 +205,9 @@ export default class DiceGame {
     if (playerThrow > computerThrow) {
       console.log('You win!');
     } else if (playerThrow < computerThrow) {
-      console.log('I win!');
+        console.log('I win!');
     } else {
-      console.log('It\'s a draw!');
+        console.log('It\'s a draw!');
     }
     this.rl.close();
   }
@@ -236,5 +220,3 @@ export default class DiceGame {
     });
   }
 }
-
-// module.exports = DiceGame;
